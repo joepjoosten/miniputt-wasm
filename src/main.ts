@@ -44,6 +44,9 @@ const WIDTH = 930
 const HEIGHT = 650
 const BALL_RADIUS = 11
 const MAX_PULL = 155
+const COURSE_CACHE_SCALE = 2
+
+type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
 const courses: ReadonlyArray<Course> = [
   { par: 3, label: "The Keyhole", fairways: [[205,55,610,205],[335,235,135,255],[205,465,470,155]], bumpers: [[540,151,28],[630,151,28]] },
@@ -76,6 +79,7 @@ let lastUiStroke = -1
 let holeAdvanceTimer: number | undefined
 let soundEnabled = true
 let audioContext: AudioContext | undefined
+const courseBitmaps: Array<CanvasImageSource | undefined> = new Array(courses.length)
 
 const updateState = (patch: Partial<UiState>) => registry.update(gameState, current => ({ ...current, ...patch }))
 
@@ -114,9 +118,108 @@ function resizeCanvas(): void {
   }
 }
 
-function drawRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number): void {
+function drawRoundedRect(ctx: DrawingContext, x: number, y: number, width: number, height: number, radius: number): void {
   ctx.beginPath()
   ctx.roundRect(x, y, width, height, radius)
+}
+
+function renderStaticCourse(staticContext: DrawingContext, course: Course): void {
+  staticContext.fillStyle = "#344139"
+  staticContext.fillRect(0, 0, WIDTH, HEIGHT)
+
+  const groundGradient = staticContext.createRadialGradient(WIDTH * .45, HEIGHT * .5, 20, WIDTH * .45, HEIGHT * .5, 630)
+  groundGradient.addColorStop(0, "#4b5947")
+  groundGradient.addColorStop(1, "#303a34")
+  staticContext.fillStyle = groundGradient
+  staticContext.fillRect(0, 0, WIDTH, HEIGHT)
+
+  staticContext.save()
+  staticContext.shadowColor = "rgba(0,0,0,.36)"
+  staticContext.shadowBlur = 22
+  staticContext.shadowOffsetY = 10
+  staticContext.fillStyle = "#b97b3e"
+  staticContext.strokeStyle = "#dda45c"
+  staticContext.lineWidth = 18
+  for (const [x,y,w,h] of course.fairways) {
+    drawRoundedRect(staticContext, x, y, w, h, 9)
+    staticContext.fill()
+    staticContext.stroke()
+  }
+  staticContext.restore()
+
+  staticContext.fillStyle = "#2eab65"
+  staticContext.strokeStyle = "#5ac87e"
+  staticContext.lineWidth = 2
+  for (const [x,y,w,h] of course.fairways) {
+    drawRoundedRect(staticContext, x + 9, y + 9, w - 18, h - 18, 4)
+    staticContext.fill()
+    staticContext.stroke()
+  }
+
+  staticContext.save()
+  staticContext.globalAlpha = .12
+  staticContext.strokeStyle = "#f0ffe6"
+  staticContext.lineWidth = 1
+  for (let x = -HEIGHT; x < WIDTH + HEIGHT; x += 18) {
+    staticContext.beginPath(); staticContext.moveTo(x, 0); staticContext.lineTo(x + HEIGHT, HEIGHT); staticContext.stroke()
+  }
+  staticContext.restore()
+
+  const teeLeft = wasm.getTeeLeft()
+  const teeTop = wasm.getTeeTop()
+  const teeWidth = wasm.getTeeRight() - teeLeft
+  const teeHeight = wasm.getTeeBottom() - teeTop
+  const teePattern = staticContext.createLinearGradient(teeLeft, teeTop, teeLeft + teeWidth, teeTop)
+  teePattern.addColorStop(0, "rgba(12,92,55,.60)")
+  teePattern.addColorStop(.5, "rgba(19,114,67,.35)")
+  teePattern.addColorStop(1, "rgba(12,92,55,.60)")
+  staticContext.fillStyle = teePattern
+  drawRoundedRect(staticContext, teeLeft, teeTop, teeWidth, teeHeight, 8)
+  staticContext.fill()
+  staticContext.strokeStyle = "rgba(226,255,199,.58)"
+  staticContext.lineWidth = 1.5
+  staticContext.setLineDash([7, 7])
+  staticContext.stroke()
+  staticContext.setLineDash([])
+
+  for (const [x,y,radius] of course.bumpers) drawBumper(staticContext, x, y, radius)
+  drawHole(staticContext, wasm.getHoleX(), wasm.getHoleY())
+
+  staticContext.fillStyle = "rgba(244,240,220,.86)"
+  staticContext.font = "700 12px 'DM Sans', sans-serif"
+  staticContext.letterSpacing = "1px"
+  staticContext.fillText(course.label.toUpperCase(), 25, 34)
+}
+
+function getCourseBitmap(hole: number, course: Course): CanvasImageSource {
+  const cached = courseBitmaps[hole]
+  if (cached) return cached
+
+  const cacheWidth = WIDTH * COURSE_CACHE_SCALE
+  const cacheHeight = HEIGHT * COURSE_CACHE_SCALE
+  const surface: HTMLCanvasElement | OffscreenCanvas = typeof OffscreenCanvas === "undefined"
+    ? document.createElement("canvas")
+    : new OffscreenCanvas(cacheWidth, cacheHeight)
+  surface.width = cacheWidth
+  surface.height = cacheHeight
+  const staticContext = surface.getContext("2d", { alpha: false }) as DrawingContext | null
+  if (!staticContext) throw new Error("Unable to create the course cache")
+  staticContext.setTransform(COURSE_CACHE_SCALE, 0, 0, COURSE_CACHE_SCALE, 0, 0)
+  renderStaticCourse(staticContext, course)
+
+  const bitmap: CanvasImageSource = typeof OffscreenCanvas !== "undefined" && surface instanceof OffscreenCanvas
+    ? surface.transferToImageBitmap()
+    : surface
+  courseBitmaps[hole] = bitmap
+  return bitmap
+}
+
+function invalidateCourseBitmaps(): void {
+  for (let hole = 0; hole < courseBitmaps.length; hole += 1) {
+    const bitmap = courseBitmaps[hole]
+    if (typeof ImageBitmap !== "undefined" && bitmap instanceof ImageBitmap) bitmap.close()
+    courseBitmaps[hole] = undefined
+  }
 }
 
 function drawCourse(): void {
@@ -126,105 +229,42 @@ function drawCourse(): void {
   const state = registry.get(gameState)
   const course = courses[state.hole] ?? courses[0]!
 
+  context.setTransform(1, 0, 0, 1, 0, 0)
+  context.drawImage(getCourseBitmap(state.hole, course), 0, 0, canvas.width, canvas.height)
   context.setTransform(scaleX, 0, 0, scaleY, 0, 0)
-  context.fillStyle = "#344139"
-  context.fillRect(0, 0, WIDTH, HEIGHT)
-
-  const groundGradient = context.createRadialGradient(WIDTH * .45, HEIGHT * .5, 20, WIDTH * .45, HEIGHT * .5, 630)
-  groundGradient.addColorStop(0, "#4b5947")
-  groundGradient.addColorStop(1, "#303a34")
-  context.fillStyle = groundGradient
-  context.fillRect(0, 0, WIDTH, HEIGHT)
-
-  context.save()
-  context.shadowColor = "rgba(0,0,0,.36)"
-  context.shadowBlur = 22
-  context.shadowOffsetY = 10
-  context.fillStyle = "#b97b3e"
-  context.strokeStyle = "#dda45c"
-  context.lineWidth = 18
-  for (const [x,y,w,h] of course.fairways) {
-    drawRoundedRect(context, x, y, w, h, 9)
-    context.fill()
-    context.stroke()
-  }
-  context.restore()
-
-  context.fillStyle = "#2eab65"
-  context.strokeStyle = "#5ac87e"
-  context.lineWidth = 2
-  for (const [x,y,w,h] of course.fairways) {
-    drawRoundedRect(context, x + 9, y + 9, w - 18, h - 18, 4)
-    context.fill()
-    context.stroke()
-  }
-
-  context.save()
-  context.globalAlpha = .12
-  context.strokeStyle = "#f0ffe6"
-  context.lineWidth = 1
-  for (let x = -HEIGHT; x < WIDTH + HEIGHT; x += 18) {
-    context.beginPath(); context.moveTo(x, 0); context.lineTo(x + HEIGHT, HEIGHT); context.stroke()
-  }
-  context.restore()
-
-  const teeLeft = wasm.getTeeLeft()
-  const teeTop = wasm.getTeeTop()
-  const teeWidth = wasm.getTeeRight() - teeLeft
-  const teeHeight = wasm.getTeeBottom() - teeTop
-  const teePattern = context.createLinearGradient(teeLeft, teeTop, teeLeft + teeWidth, teeTop)
-  teePattern.addColorStop(0, "rgba(12,92,55,.60)")
-  teePattern.addColorStop(.5, "rgba(19,114,67,.35)")
-  teePattern.addColorStop(1, "rgba(12,92,55,.60)")
-  context.fillStyle = teePattern
-  drawRoundedRect(context, teeLeft, teeTop, teeWidth, teeHeight, 8)
-  context.fill()
-  context.strokeStyle = "rgba(226,255,199,.58)"
-  context.lineWidth = 1.5
-  context.setLineDash([7, 7])
-  context.stroke()
-  context.setLineDash([])
-
-  for (const [x,y,radius] of course.bumpers) drawBumper(x,y,radius)
-  drawHole(wasm.getHoleX(), wasm.getHoleY())
 
   if (wasm.isPlaced()) drawBall(wasm.getBallX(), wasm.getBallY(), wasm.isSunk() === 1)
   if (aimPoint && state.phase === "aiming") drawAim(aimPoint)
-
-  context.fillStyle = "rgba(244,240,220,.86)"
-  context.font = "700 12px 'DM Sans', sans-serif"
-  context.letterSpacing = "1px"
-  context.fillText(course.label.toUpperCase(), 25, 34)
 }
 
-function drawBumper(x: number, y: number, radius: number): void {
-  context.save()
-  context.shadowColor = "rgba(0,0,0,.34)"
-  context.shadowBlur = 8
-  context.shadowOffsetY = 5
-  const gradient = context.createRadialGradient(x - radius * .35, y - radius * .42, 2, x, y, radius)
+function drawBumper(ctx: DrawingContext, x: number, y: number, radius: number): void {
+  ctx.save()
+  ctx.shadowColor = "rgba(0,0,0,.34)"
+  ctx.shadowBlur = 8
+  ctx.shadowOffsetY = 5
+  const gradient = ctx.createRadialGradient(x - radius * .35, y - radius * .42, 2, x, y, radius)
   gradient.addColorStop(0, "#f1eee5")
   gradient.addColorStop(.65, "#bbbcb8")
   gradient.addColorStop(1, "#767d78")
-  context.fillStyle = gradient
-  context.beginPath()
-  context.arc(x, y, radius, 0, Math.PI * 2)
-  context.fill()
-  context.restore()
+  ctx.fillStyle = gradient
+  ctx.beginPath()
+  ctx.arc(x, y, radius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
 }
 
-function drawHole(x: number, y: number): void {
-  const gradient = context.createRadialGradient(x - 3, y - 3, 1, x, y, 16)
+function drawHole(ctx: DrawingContext, x: number, y: number): void {
+  const gradient = ctx.createRadialGradient(x - 3, y - 3, 1, x, y, 16)
   gradient.addColorStop(0, "#050807")
   gradient.addColorStop(.72, "#0c1410")
   gradient.addColorStop(1, "rgba(0,0,0,.3)")
-  context.fillStyle = gradient
-  context.beginPath(); context.ellipse(x, y, 15, 11, 0, 0, Math.PI * 2); context.fill()
-  context.strokeStyle = "rgba(255,255,255,.28)"; context.lineWidth = 1; context.stroke()
-  context.strokeStyle = "#f7f3df"; context.lineWidth = 2
-  context.beginPath(); context.moveTo(x, y - 5); context.lineTo(x, y - 59); context.stroke()
-  context.fillStyle = "#ef7f49"
-  context.beginPath(); context.moveTo(x + 1, y - 58); context.lineTo(x + 38, y - 46); context.lineTo(x + 1, y - 35); context.closePath(); context.fill()
+  ctx.fillStyle = gradient
+  ctx.beginPath(); ctx.ellipse(x, y, 15, 11, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = "rgba(255,255,255,.28)"; ctx.lineWidth = 1; ctx.stroke()
+  ctx.strokeStyle = "#f7f3df"; ctx.lineWidth = 2
+  ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x, y - 59); ctx.stroke()
+  ctx.fillStyle = "#ef7f49"
+  ctx.beginPath(); ctx.moveTo(x + 1, y - 58); ctx.lineTo(x + 38, y - 46); ctx.lineTo(x + 1, y - 35); ctx.closePath(); ctx.fill()
 }
 
 function drawBall(x: number, y: number, sunk: boolean): void {
@@ -383,6 +423,7 @@ async function boot(): Promise<void> {
   wasm.reset(0)
   loading.classList.add("hidden")
   resizeCanvas()
+  void document.fonts.ready.then(invalidateCourseBitmaps)
   requestAnimationFrame(frame)
 }
 
@@ -390,4 +431,3 @@ boot().catch(error => {
   console.error(error)
   loading.textContent = "The course could not be loaded. Please refresh and try again."
 })
-

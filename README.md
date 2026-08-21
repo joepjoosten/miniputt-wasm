@@ -27,6 +27,5 @@ The workflow in `.github/workflows/deploy-pages.yml` builds and deploys every pu
 ## Architecture
 
 - `assembly/index.ts` owns ball placement, velocity, friction, wall/bumper collisions, strokes, cups, and the three course layouts.
-- `src/main.ts` loads the WASM module, draws the responsive canvas, translates pointer gestures into putts, and updates the Effect Atom UI state.
+- `src/main.ts` loads the WASM module, pre-renders each static course to an offscreen bitmap for per-frame blitting, draws only dynamic game objects, translates pointer gestures into putts, and updates the Effect Atom UI state.
 - `tests/physics.test.js` exercises the compiled WebAssembly module directly.
-
