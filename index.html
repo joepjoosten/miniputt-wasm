@@ -22,9 +22,10 @@
           </div>
         </header>
         <section class="course-card">
-          <canvas id="course" aria-label="Mini golf course. Place the ball in the striped tee area, then drag and release from the ball to putt."></canvas>
+          <canvas id="course" aria-label="Mini golf course. Place the ball in the striped tee area, then drag and release from the ball to putt. Pinch with two fingers to zoom and pan."></canvas>
           <div id="loading" class="loading">Shaping the green…</div>
           <div id="toast" class="toast" role="status"></div>
+          <div class="gesture-hint" aria-hidden="true">Pinch to zoom · Two-finger drag to pan</div>
           <div id="tutorial" class="tutorial">
             <span class="step-number">1</span>
             <p id="instruction">Tap inside the striped tee area to place your ball.</p>
@@ -32,7 +33,7 @@
         </section>
         <footer class="game-footer">
           <button id="reset-button" type="button">Restart hole</button>
-          <p>Drag back from the ball, then release. The longer the pull, the stronger the putt.</p>
+          <p>Drag back from the ball to putt. Pinch with two fingers to zoom and pan.</p>
           <button id="sound-button" type="button" aria-pressed="true">Sound on</button>
         </footer>
       </main>

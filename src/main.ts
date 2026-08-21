@@ -33,6 +33,12 @@ type UiState = Readonly<{
 }>
 
 type Point = { x: number; y: number }
+type Viewport = { x: number; y: number; zoom: number }
+type PinchGesture = {
+  startDistance: number
+  startZoom: number
+  anchorWorld: Point
+}
 type Course = {
   par: number
   label: string
@@ -80,6 +86,11 @@ let holeAdvanceTimer: number | undefined
 let soundEnabled = true
 let audioContext: AudioContext | undefined
 const courseBitmaps: Array<CanvasImageSource | undefined> = new Array(courses.length)
+const touchPointers = new Map<number, Point>()
+const viewport: Viewport = { x: WIDTH / 2, y: HEIGHT / 2, zoom: 1 }
+let pinchGesture: PinchGesture | null = null
+let suppressTouchActions = false
+let pendingPlacement: { pointerId: number; start: Point; moved: boolean } | null = null
 
 const updateState = (patch: Partial<UiState>) => registry.update(gameState, current => ({ ...current, ...patch }))
 
@@ -99,12 +110,43 @@ registry.subscribe(gameState, state => {
   }
 }, { immediate: true })
 
-function canvasPoint(event: PointerEvent): Point {
+function canvasScreenPoint(event: PointerEvent): Point {
   const bounds = canvas.getBoundingClientRect()
   return {
-    x: (event.clientX - bounds.left) / bounds.width * WIDTH,
-    y: (event.clientY - bounds.top) / bounds.height * HEIGHT
+    x: event.clientX - bounds.left,
+    y: event.clientY - bounds.top
   }
+}
+
+function baseCssScale(bounds: DOMRect): number {
+  return Math.min(bounds.width / WIDTH, bounds.height / HEIGHT)
+}
+
+function worldPointFromScreen(point: Point, bounds: DOMRect): Point {
+  const scale = baseCssScale(bounds) * viewport.zoom
+  return {
+    x: viewport.x + (point.x - bounds.width / 2) / scale,
+    y: viewport.y + (point.y - bounds.height / 2) / scale
+  }
+}
+
+function canvasPoint(event: PointerEvent): Point {
+  return worldPointFromScreen(canvasScreenPoint(event), canvas.getBoundingClientRect())
+}
+
+function clampViewport(bounds = canvas.getBoundingClientRect()): void {
+  const baseScale = baseCssScale(bounds)
+  if (baseScale <= 0) return
+  const halfWidth = bounds.width / (2 * baseScale * viewport.zoom)
+  const halfHeight = bounds.height / (2 * baseScale * viewport.zoom)
+  viewport.x = halfWidth >= WIDTH / 2 ? WIDTH / 2 : Math.max(halfWidth, Math.min(WIDTH - halfWidth, viewport.x))
+  viewport.y = halfHeight >= HEIGHT / 2 ? HEIGHT / 2 : Math.max(halfHeight, Math.min(HEIGHT - halfHeight, viewport.y))
+}
+
+function resetViewport(): void {
+  viewport.x = WIDTH / 2
+  viewport.y = HEIGHT / 2
+  viewport.zoom = 1
 }
 
 function resizeCanvas(): void {
@@ -115,6 +157,7 @@ function resizeCanvas(): void {
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width
     canvas.height = height
+    clampViewport(bounds)
   }
 }
 
@@ -224,14 +267,18 @@ function invalidateCourseBitmaps(): void {
 
 function drawCourse(): void {
   resizeCanvas()
-  const scaleX = canvas.width / WIDTH
-  const scaleY = canvas.height / HEIGHT
+  const baseScale = Math.min(canvas.width / WIDTH, canvas.height / HEIGHT)
+  const scale = baseScale * viewport.zoom
+  const translateX = canvas.width / 2 - viewport.x * scale
+  const translateY = canvas.height / 2 - viewport.y * scale
   const state = registry.get(gameState)
   const course = courses[state.hole] ?? courses[0]!
 
   context.setTransform(1, 0, 0, 1, 0, 0)
-  context.drawImage(getCourseBitmap(state.hole, course), 0, 0, canvas.width, canvas.height)
-  context.setTransform(scaleX, 0, 0, scaleY, 0, 0)
+  context.fillStyle = "#303a34"
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.setTransform(scale, 0, 0, scale, translateX, translateY)
+  context.drawImage(getCourseBitmap(state.hole, course), 0, 0, WIDTH, HEIGHT)
 
   if (wasm.isPlaced()) drawBall(wasm.getBallX(), wasm.getBallY(), wasm.isSunk() === 1)
   if (aimPoint && state.phase === "aiming") drawAim(aimPoint)
@@ -320,18 +367,79 @@ function startHole(hole: number, totalStrokes: number): void {
   window.clearTimeout(holeAdvanceTimer)
   wasm.reset(hole)
   aimPoint = null
+  resetViewport()
   lastUiStroke = -1
   updateState({ hole, strokes: 0, totalStrokes, phase: "placing", message: "Tap inside the striped tee area to place your ball." })
 }
 
+function cancelAimForGesture(): void {
+  if (activePointer === null) return
+  activePointer = null
+  aimPoint = null
+  if (registry.get(gameState).phase === "aiming") {
+    updateState({ phase: "ready", message: "Press the ball, drag back, then release to putt." })
+  }
+}
+
+function startPinchGesture(): void {
+  const points = Array.from(touchPointers.values())
+  const first = points[0]
+  const second = points[1]
+  if (!first || !second) return
+  const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }
+  pinchGesture = {
+    startDistance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+    startZoom: viewport.zoom,
+    anchorWorld: worldPointFromScreen(midpoint, canvas.getBoundingClientRect())
+  }
+  suppressTouchActions = true
+  pendingPlacement = null
+  cancelAimForGesture()
+}
+
+function movePinchGesture(): void {
+  if (!pinchGesture) return
+  const points = Array.from(touchPointers.values())
+  const first = points[0]
+  const second = points[1]
+  if (!first || !second) return
+  const bounds = canvas.getBoundingClientRect()
+  const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }
+  const distance = Math.hypot(second.x - first.x, second.y - first.y)
+  viewport.zoom = Math.max(1, Math.min(3.5, pinchGesture.startZoom * distance / pinchGesture.startDistance))
+  const scale = baseCssScale(bounds) * viewport.zoom
+  viewport.x = pinchGesture.anchorWorld.x - (midpoint.x - bounds.width / 2) / scale
+  viewport.y = pinchGesture.anchorWorld.y - (midpoint.y - bounds.height / 2) / scale
+  clampViewport(bounds)
+}
+
+function placeBall(point: Point): void {
+  if (wasm.place(point.x, point.y)) {
+    playTone(520, .06)
+    updateState({ phase: "ready", message: "Press the ball, drag back, then release to putt." })
+  }
+}
+
 canvas.addEventListener("pointerdown", event => {
+  const isTouch = event.pointerType === "touch"
+  if (isTouch) {
+    event.preventDefault()
+    touchPointers.set(event.pointerId, canvasScreenPoint(event))
+    canvas.setPointerCapture(event.pointerId)
+    if (touchPointers.size >= 2) {
+      startPinchGesture()
+      return
+    }
+  }
+
   if (activePointer !== null) return
   const state = registry.get(gameState)
   const point = canvasPoint(event)
   if (state.phase === "placing") {
-    if (wasm.place(point.x, point.y)) {
-      playTone(520, .06)
-      updateState({ phase: "ready", message: "Press the ball, drag back, then release to putt." })
+    if (isTouch) {
+      pendingPlacement = { pointerId: event.pointerId, start: canvasScreenPoint(event), moved: false }
+    } else {
+      placeBall(point)
     }
     return
   }
@@ -347,12 +455,25 @@ canvas.addEventListener("pointerdown", event => {
 })
 
 canvas.addEventListener("pointermove", event => {
+  if (event.pointerType === "touch" && touchPointers.has(event.pointerId)) {
+    event.preventDefault()
+    const screenPoint = canvasScreenPoint(event)
+    touchPointers.set(event.pointerId, screenPoint)
+    if (pinchGesture && touchPointers.size >= 2) {
+      movePinchGesture()
+      return
+    }
+    if (pendingPlacement?.pointerId === event.pointerId && Math.hypot(screenPoint.x - pendingPlacement.start.x, screenPoint.y - pendingPlacement.start.y) > 12) {
+      pendingPlacement.moved = true
+    }
+    if (suppressTouchActions) return
+  }
   if (event.pointerId !== activePointer) return
   event.preventDefault()
   aimPoint = canvasPoint(event)
 })
 
-function finishAim(event: PointerEvent): void {
+function finishAim(event: PointerEvent, cancelled = false): void {
   if (event.pointerId !== activePointer) return
   const point = canvasPoint(event)
   const pullX = wasm.getBallX() - point.x
@@ -360,6 +481,10 @@ function finishAim(event: PointerEvent): void {
   activePointer = null
   aimPoint = null
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+  if (cancelled) {
+    updateState({ phase: "ready", message: "Press the ball, drag back, then release to putt." })
+    return
+  }
   if (wasm.shoot(pullX, pullY)) {
     playTone(190, .1)
     updateState({ strokes: wasm.getStrokes(), phase: "rolling", message: "Let it roll…" })
@@ -368,8 +493,28 @@ function finishAim(event: PointerEvent): void {
   }
 }
 
-canvas.addEventListener("pointerup", finishAim)
-canvas.addEventListener("pointercancel", finishAim)
+function endPointer(event: PointerEvent, cancelled: boolean): void {
+  if (event.pointerType === "touch") {
+    const wasSuppressed = suppressTouchActions
+    touchPointers.delete(event.pointerId)
+    if (touchPointers.size < 2) pinchGesture = null
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+    if (wasSuppressed) {
+      if (touchPointers.size === 0) suppressTouchActions = false
+      return
+    }
+    if (pendingPlacement?.pointerId === event.pointerId) {
+      const shouldPlace = !cancelled && !pendingPlacement.moved
+      pendingPlacement = null
+      if (shouldPlace) placeBall(canvasPoint(event))
+      return
+    }
+  }
+  finishAim(event, cancelled)
+}
+
+canvas.addEventListener("pointerup", event => endPointer(event, false))
+canvas.addEventListener("pointercancel", event => endPointer(event, true))
 
 resetButton.addEventListener("click", () => {
   const state = registry.get(gameState)
