@@ -65,6 +65,7 @@ const gameState = Atom.make<UiState>(initialState)
 const registry = AtomRegistry.make()
 
 const canvas = document.querySelector<HTMLCanvasElement>("#course")!
+const courseCard = document.querySelector<HTMLElement>(".course-card")!
 const context = canvas.getContext("2d", { alpha: false })!
 const loading = document.querySelector<HTMLDivElement>("#loading")!
 const toast = document.querySelector<HTMLDivElement>("#toast")!
@@ -91,6 +92,8 @@ const viewport: Viewport = { x: WIDTH / 2, y: HEIGHT / 2, zoom: 1 }
 let pinchGesture: PinchGesture | null = null
 let suppressTouchActions = false
 let pendingPlacement: { pointerId: number; start: Point; moved: boolean } | null = null
+let viewportUserAdjusted = false
+let pendingResizeFrame = 0
 
 const updateState = (patch: Partial<UiState>) => registry.update(gameState, current => ({ ...current, ...patch }))
 
@@ -137,16 +140,25 @@ function canvasPoint(event: PointerEvent): Point {
 function clampViewport(bounds = canvas.getBoundingClientRect()): void {
   const baseScale = baseCssScale(bounds)
   if (baseScale <= 0) return
-  const halfWidth = bounds.width / (2 * baseScale * viewport.zoom)
-  const halfHeight = bounds.height / (2 * baseScale * viewport.zoom)
-  viewport.x = halfWidth >= WIDTH / 2 ? WIDTH / 2 : Math.max(halfWidth, Math.min(WIDTH - halfWidth, viewport.x))
-  viewport.y = halfHeight >= HEIGHT / 2 ? HEIGHT / 2 : Math.max(halfHeight, Math.min(HEIGHT - halfHeight, viewport.y))
+  if (viewport.zoom <= 1.001) {
+    viewport.x = WIDTH / 2
+    viewport.y = HEIGHT / 2
+    return
+  }
+  viewport.x = Math.max(0, Math.min(WIDTH, viewport.x))
+  viewport.y = Math.max(0, Math.min(HEIGHT, viewport.y))
 }
 
 function resetViewport(): void {
-  viewport.x = WIDTH / 2
-  viewport.y = HEIGHT / 2
-  viewport.zoom = 1
+  const bounds = canvas.getBoundingClientRect()
+  const compact = window.matchMedia("(max-width: 900px), (max-height: 600px)").matches
+  const fitScale = baseCssScale(bounds)
+  const coverScale = Math.max(bounds.width / WIDTH, bounds.height / HEIGHT)
+  viewport.zoom = compact && fitScale > 0 ? Math.max(1, Math.min(3.5, coverScale / fitScale)) : 1
+  viewport.x = compact ? (wasm.getTeeLeft() + wasm.getTeeRight()) / 2 : WIDTH / 2
+  viewport.y = compact ? (wasm.getTeeTop() + wasm.getTeeBottom()) / 2 : HEIGHT / 2
+  viewportUserAdjusted = false
+  clampViewport(bounds)
 }
 
 function resizeCanvas(): void {
@@ -407,6 +419,7 @@ function movePinchGesture(): void {
   const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }
   const distance = Math.hypot(second.x - first.x, second.y - first.y)
   viewport.zoom = Math.max(1, Math.min(3.5, pinchGesture.startZoom * distance / pinchGesture.startDistance))
+  viewportUserAdjusted = true
   const scale = baseCssScale(bounds) * viewport.zoom
   viewport.x = pinchGesture.anchorWorld.x - (midpoint.x - bounds.width / 2) / scale
   viewport.y = pinchGesture.anchorWorld.y - (midpoint.y - bounds.height / 2) / scale
@@ -528,7 +541,19 @@ soundButton.addEventListener("click", () => {
   if (soundEnabled) playTone(440, .05)
 })
 
-window.addEventListener("resize", resizeCanvas)
+function handleViewportResize(): void {
+  cancelAnimationFrame(pendingResizeFrame)
+  pendingResizeFrame = requestAnimationFrame(() => {
+    resizeCanvas()
+    if (!viewportUserAdjusted && wasm) resetViewport()
+    else clampViewport()
+  })
+}
+
+window.addEventListener("resize", handleViewportResize)
+window.addEventListener("orientationchange", handleViewportResize)
+window.visualViewport?.addEventListener("resize", handleViewportResize)
+new ResizeObserver(handleViewportResize).observe(courseCard)
 
 function frame(now: number): void {
   wasm.step((now - lastFrame) / 1000)
@@ -568,6 +593,7 @@ async function boot(): Promise<void> {
   wasm.reset(0)
   loading.classList.add("hidden")
   resizeCanvas()
+  resetViewport()
   void document.fonts.ready.then(invalidateCourseBitmaps)
   requestAnimationFrame(frame)
 }
