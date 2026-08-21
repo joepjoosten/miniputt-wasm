@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#151c1a" />
+    <meta name="description" content="A tiny WebAssembly-powered mini golf game." />
+    <title>Little Links — WebAssembly Mini Golf</title>
+  </head>
+  <body>
+    <div id="app">
+      <main class="game-shell" aria-live="polite">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">WebAssembly mini golf</p>
+            <h1>Little Links</h1>
+          </div>
+          <div class="score-card" aria-label="Hole and score">
+            <span><small>Hole</small><strong id="hole-value">1 / 3</strong></span>
+            <span><small>Par</small><strong id="par-value">3</strong></span>
+            <span><small>Strokes</small><strong id="stroke-value">0</strong></span>
+          </div>
+        </header>
+        <section class="course-card">
+          <canvas id="course" aria-label="Mini golf course. Place the ball in the striped tee area, then drag and release from the ball to putt."></canvas>
+          <div id="loading" class="loading">Shaping the green…</div>
+          <div id="toast" class="toast" role="status"></div>
+          <div id="tutorial" class="tutorial">
+            <span class="step-number">1</span>
+            <p id="instruction">Tap inside the striped tee area to place your ball.</p>
+          </div>
+        </section>
+        <footer class="game-footer">
+          <button id="reset-button" type="button">Restart hole</button>
+          <p>Drag back from the ball, then release. The longer the pull, the stronger the putt.</p>
+          <button id="sound-button" type="button" aria-pressed="true">Sound on</button>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

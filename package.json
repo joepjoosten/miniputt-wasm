@@ -1,0 +1,22 @@
+{
+  "name": "miniputt",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run asbuild && vite",
+    "asbuild": "asc assembly/index.ts --target release",
+    "asbuild:debug": "asc assembly/index.ts --target debug",
+    "build": "npm run asbuild && tsc --noEmit && vite build",
+    "test": "npm run asbuild && node --test tests/*.test.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.111"
+  },
+  "devDependencies": {
+    "assemblyscript": "0.28.20",
+    "typescript": "5.9.2",
+    "vite": "8.2.2"
+  }
+}
