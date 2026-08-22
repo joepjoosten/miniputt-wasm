@@ -111,6 +111,10 @@ canvas {
   cursor: crosshair;
 }
 
+#course.panning {
+  cursor: grabbing;
+}
+
 .loading {
   position: absolute;
   inset: 0;

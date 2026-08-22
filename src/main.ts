@@ -41,6 +41,11 @@ type PinchGesture = {
   startZoom: number
   anchorWorld: Point
 }
+type MousePanGesture = {
+  pointerId: number
+  startScreen: Point
+  startViewport: Point
+}
 type Course = {
   par: number
   label: string
@@ -55,6 +60,8 @@ const MAX_PULL = 155
 const COURSE_CACHE_SCALE = 2
 const INACTIVITY_HELP_DELAY = 60_000
 const DEFAULT_SOUND_ENABLED = true
+const MIN_ZOOM = 1
+const MAX_ZOOM = 3.5
 
 type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
@@ -103,6 +110,7 @@ const courseBitmaps: Array<CanvasImageSource | undefined> = new Array(courses.le
 const touchPointers = new Map<number, Point>()
 const viewport: Viewport = { x: WIDTH / 2, y: HEIGHT / 2, zoom: 1 }
 let pinchGesture: PinchGesture | null = null
+let mousePanGesture: MousePanGesture | null = null
 let suppressTouchActions = false
 let pendingPlacement: { pointerId: number; start: Point; moved: boolean } | null = null
 let viewportUserAdjusted = false
@@ -167,7 +175,7 @@ function resetViewport(): void {
   const compact = window.matchMedia("(max-width: 900px), (max-height: 600px)").matches
   const fitScale = baseCssScale(bounds)
   const coverScale = Math.max(bounds.width / WIDTH, bounds.height / HEIGHT)
-  viewport.zoom = compact && fitScale > 0 ? Math.max(1, Math.min(3.5, coverScale / fitScale)) : 1
+  viewport.zoom = compact && fitScale > 0 ? Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, coverScale / fitScale)) : MIN_ZOOM
   viewport.x = compact ? (wasm.getTeeLeft() + wasm.getTeeRight()) / 2 : WIDTH / 2
   viewport.y = compact ? (wasm.getTeeTop() + wasm.getTeeBottom()) / 2 : HEIGHT / 2
   viewportUserAdjusted = false
@@ -480,7 +488,7 @@ function movePinchGesture(): void {
   const bounds = canvas.getBoundingClientRect()
   const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }
   const distance = Math.hypot(second.x - first.x, second.y - first.y)
-  viewport.zoom = Math.max(1, Math.min(3.5, pinchGesture.startZoom * distance / pinchGesture.startDistance))
+  viewport.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchGesture.startZoom * distance / pinchGesture.startDistance))
   viewportUserAdjusted = true
   const scale = baseCssScale(bounds) * viewport.zoom
   viewport.x = pinchGesture.anchorWorld.x - (midpoint.x - bounds.width / 2) / scale
@@ -495,9 +503,64 @@ function placeBall(point: Point): void {
   }
 }
 
+function startMousePan(event: PointerEvent): void {
+  event.preventDefault()
+  cancelAimForGesture()
+  mousePanGesture = {
+    pointerId: event.pointerId,
+    startScreen: canvasScreenPoint(event),
+    startViewport: { x: viewport.x, y: viewport.y }
+  }
+  viewportUserAdjusted = true
+  canvas.setPointerCapture(event.pointerId)
+  canvas.classList.add("panning")
+}
+
+function moveMousePan(event: PointerEvent): boolean {
+  if (mousePanGesture?.pointerId !== event.pointerId) return false
+  event.preventDefault()
+  const bounds = canvas.getBoundingClientRect()
+  const scale = baseCssScale(bounds) * viewport.zoom
+  if (scale <= 0) return true
+  const point = canvasScreenPoint(event)
+  viewport.x = mousePanGesture.startViewport.x - (point.x - mousePanGesture.startScreen.x) / scale
+  viewport.y = mousePanGesture.startViewport.y - (point.y - mousePanGesture.startScreen.y) / scale
+  clampViewport(bounds)
+  return true
+}
+
+function endMousePan(event: PointerEvent): boolean {
+  if (mousePanGesture?.pointerId !== event.pointerId) return false
+  mousePanGesture = null
+  canvas.classList.remove("panning")
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+  return true
+}
+
+function zoomWithMouse(event: WheelEvent): void {
+  event.preventDefault()
+  recordActivity()
+  if (activePointer !== null || mousePanGesture) return
+  const bounds = canvas.getBoundingClientRect()
+  const screenPoint = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+  const anchorWorld = worldPointFromScreen(screenPoint, bounds)
+  const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 :
+    event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * bounds.height : event.deltaY
+  viewport.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewport.zoom * Math.exp(-delta * .0015)))
+  viewportUserAdjusted = true
+  const scale = baseCssScale(bounds) * viewport.zoom
+  viewport.x = anchorWorld.x - (screenPoint.x - bounds.width / 2) / scale
+  viewport.y = anchorWorld.y - (screenPoint.y - bounds.height / 2) / scale
+  clampViewport(bounds)
+}
+
 canvas.addEventListener("pointerdown", event => {
   recordActivity()
   const isTouch = event.pointerType === "touch"
+  if (!isTouch && (event.button === 1 || event.button === 2)) {
+    startMousePan(event)
+    return
+  }
   if (isTouch) {
     event.preventDefault()
     touchPointers.set(event.pointerId, canvasScreenPoint(event))
@@ -531,6 +594,7 @@ canvas.addEventListener("pointerdown", event => {
 })
 
 canvas.addEventListener("pointermove", event => {
+  if (moveMousePan(event)) return
   if (event.pointerType === "touch" && touchPointers.has(event.pointerId)) {
     event.preventDefault()
     const screenPoint = canvasScreenPoint(event)
@@ -570,6 +634,7 @@ function finishAim(event: PointerEvent, cancelled = false): void {
 }
 
 function endPointer(event: PointerEvent, cancelled: boolean): void {
+  if (endMousePan(event)) return
   if (event.pointerType === "touch") {
     const wasSuppressed = suppressTouchActions
     touchPointers.delete(event.pointerId)
@@ -591,6 +656,8 @@ function endPointer(event: PointerEvent, cancelled: boolean): void {
 
 canvas.addEventListener("pointerup", event => endPointer(event, false))
 canvas.addEventListener("pointercancel", event => endPointer(event, true))
+canvas.addEventListener("wheel", zoomWithMouse, { passive: false })
+canvas.addEventListener("contextmenu", event => event.preventDefault())
 
 resetButton.addEventListener("click", () => {
   recordActivity()
@@ -621,7 +688,7 @@ window.visualViewport?.addEventListener("resize", handleViewportResize)
 new ResizeObserver(handleViewportResize).observe(courseCard)
 
 function followRollingBall(): void {
-  if (viewport.zoom <= 1.001 || pinchGesture || suppressTouchActions) return
+  if (viewport.zoom <= 1.001 || pinchGesture || mousePanGesture || suppressTouchActions) return
   const bounds = canvas.getBoundingClientRect()
   const scale = baseCssScale(bounds) * viewport.zoom
   if (scale <= 0) return
