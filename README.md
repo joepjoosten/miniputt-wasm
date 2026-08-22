@@ -11,6 +11,8 @@ npm run dev
 
 Open the local URL shown by Vite. Place the ball in the striped tee area, press the ball, drag backward to choose power and direction, then release. On touch screens, the course fills the available portrait or landscape viewport; pinch with two fingers to zoom and drag with two fingers to pan. The padded camera bounds let any part of the course be centered on screen.
 
+While a shot is rolling, the camera follows only after the ball crosses the outer 25% of the viewport. It stops following with the ball so the player can position the camera for the next shot.
+
 ## Verify and build
 
 ```sh

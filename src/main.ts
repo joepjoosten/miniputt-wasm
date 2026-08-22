@@ -555,8 +555,29 @@ window.addEventListener("orientationchange", handleViewportResize)
 window.visualViewport?.addEventListener("resize", handleViewportResize)
 new ResizeObserver(handleViewportResize).observe(courseCard)
 
+function followRollingBall(): void {
+  if (viewport.zoom <= 1.001 || pinchGesture || suppressTouchActions) return
+  const bounds = canvas.getBoundingClientRect()
+  const scale = baseCssScale(bounds) * viewport.zoom
+  if (scale <= 0) return
+
+  const safeHalfWidth = bounds.width / scale * 0.25
+  const safeHalfHeight = bounds.height / scale * 0.25
+  const ballX = wasm.getBallX()
+  const ballY = wasm.getBallY()
+
+  if (ballX < viewport.x - safeHalfWidth) viewport.x = ballX + safeHalfWidth
+  else if (ballX > viewport.x + safeHalfWidth) viewport.x = ballX - safeHalfWidth
+
+  if (ballY < viewport.y - safeHalfHeight) viewport.y = ballY + safeHalfHeight
+  else if (ballY > viewport.y + safeHalfHeight) viewport.y = ballY - safeHalfHeight
+
+  clampViewport(bounds)
+}
+
 function frame(now: number): void {
-  wasm.step((now - lastFrame) / 1000)
+  const deltaSeconds = (now - lastFrame) / 1000
+  wasm.step(deltaSeconds)
   lastFrame = now
 
   const strokes = wasm.getStrokes()
@@ -566,7 +587,9 @@ function frame(now: number): void {
   }
 
   const state = registry.get(gameState)
-  if (state.phase === "rolling" && !wasm.isMoving() && !wasm.isSunk()) {
+  const moving = wasm.isMoving() === 1
+  if (state.phase === "rolling" && moving) followRollingBall()
+  if (state.phase === "rolling" && !moving && !wasm.isSunk()) {
     updateState({ phase: "ready", message: "Press the ball, drag back, then release for your next putt." })
   }
 
