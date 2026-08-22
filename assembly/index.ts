@@ -11,6 +11,7 @@ let velocityY: f64 = 0.0
 let placed: bool = false
 let sunk: bool = false
 let strokes: i32 = 0
+let collisionStrength: f64 = 0.0
 
 function insideRect(x: f64, y: f64, left: f64, top: f64, right: f64, bottom: f64): bool {
   return x >= left + BALL_RADIUS && x <= right - BALL_RADIUS && y >= top + BALL_RADIUS && y <= bottom - BALL_RADIUS
@@ -89,6 +90,7 @@ export function reset(hole: i32): void {
   placed = false
   sunk = false
   strokes = 0
+  collisionStrength = 0.0
 }
 
 export function place(x: f64, y: f64): i32 {
@@ -131,6 +133,7 @@ export function step(deltaSeconds: f64): void {
       ballX = nextX
       ballY = nextY
     } else {
+      collisionStrength = Math.max(collisionStrength, speed)
       const canMoveX = insideCourse(nextX, ballY)
       const canMoveY = insideCourse(ballX, nextY)
       if (canMoveX) {
@@ -162,6 +165,12 @@ export function step(deltaSeconds: f64): void {
   }
 }
 
+export function consumeCollisionStrength(): f64 {
+  const strength = collisionStrength
+  collisionStrength = 0.0
+  return strength
+}
+
 export function getBallX(): f64 { return ballX }
 export function getBallY(): f64 { return ballY }
 export function getVelocityX(): f64 { return velocityX }
@@ -177,4 +186,3 @@ export function getTeeRight(): f64 { return teeRight() }
 export function getTeeBottom(): f64 { return teeBottom() }
 export function getHoleX(): f64 { return holeX() }
 export function getHoleY(): f64 { return holeY() }
-

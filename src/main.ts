@@ -6,6 +6,7 @@ type WasmGame = {
   place(x: number, y: number): number
   shoot(pullX: number, pullY: number): number
   step(deltaSeconds: number): void
+  consumeCollisionStrength(): number
   getBallX(): number
   getBallY(): number
   getVelocityX(): number
@@ -97,6 +98,7 @@ let holeAdvanceTimer: number | undefined
 let inactivityHelpTimer: number | undefined
 let soundEnabled = DEFAULT_SOUND_ENABLED
 let audioContext: AudioContext | undefined
+let lastCollisionSoundAt = -Infinity
 const courseBitmaps: Array<CanvasImageSource | undefined> = new Array(courses.length)
 const touchPointers = new Map<number, Point>()
 const viewport: Viewport = { x: WIDTH / 2, y: HEIGHT / 2, zoom: 1 }
@@ -399,6 +401,14 @@ function playPuttSound(): void {
   playTone(82, .065, "sine", .045, .01)
 }
 
+function playCollisionSound(strength: number, now: number): void {
+  if (strength < 18 || now - lastCollisionSoundAt < 75) return
+  lastCollisionSoundAt = now
+  const intensity = Math.min(1, strength / 700)
+  playTone(110 + intensity * 80, .055, "triangle", .018 + intensity * .04)
+  playTone(70 + intensity * 35, .07, "sine", .012 + intensity * .022, .008)
+}
+
 function showInstructionsAfterInactivity(): void {
   const state = registry.get(gameState)
   if (state.phase === "placing" || state.phase === "ready" || state.phase === "aiming") {
@@ -633,6 +643,7 @@ function followRollingBall(): void {
 function frame(now: number): void {
   const deltaSeconds = (now - lastFrame) / 1000
   wasm.step(deltaSeconds)
+  playCollisionSound(wasm.consumeCollisionStrength(), now)
   lastFrame = now
 
   const strokes = wasm.getStrokes()

@@ -38,3 +38,26 @@ test("friction eventually brings a rolling ball to rest", () => {
   assert.equal(game.isMoving(), 0)
   assert.equal(game.getStrokes(), 1)
 })
+
+test("rail and bumper impacts emit a consumable collision strength", () => {
+  const impacts = [
+    { hole: 0, start: [330, 550], pull: [-120, 0], label: "rail" },
+    { hole: 1, start: [230, 515], pull: [0, -120], label: "bumper" }
+  ]
+
+  for (const impact of impacts) {
+    game.reset(impact.hole)
+    assert.equal(game.consumeCollisionStrength(), 0)
+    assert.equal(game.place(...impact.start), 1)
+    assert.equal(game.shoot(...impact.pull), 1)
+
+    let strength = 0
+    for (let frame = 0; frame < 240 && strength === 0; frame += 1) {
+      game.step(1 / 60)
+      strength = game.consumeCollisionStrength()
+    }
+
+    assert.ok(strength > 0, `${impact.label} collision emits its impact speed`)
+    assert.equal(game.consumeCollisionStrength(), 0, `${impact.label} event is consumed once`)
+  }
+})
