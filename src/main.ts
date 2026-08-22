@@ -30,6 +30,7 @@ type UiState = Readonly<{
   totalStrokes: number
   phase: Phase
   message: string
+  instructionsVisible: boolean
 }>
 
 type Point = { x: number; y: number }
@@ -51,6 +52,8 @@ const HEIGHT = 650
 const BALL_RADIUS = 11
 const MAX_PULL = 155
 const COURSE_CACHE_SCALE = 2
+const INACTIVITY_HELP_DELAY = 60_000
+const DEFAULT_SOUND_ENABLED = true
 
 type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
@@ -60,7 +63,14 @@ const courses: ReadonlyArray<Course> = [
   { par: 4, label: "Back Nine Bend", fairways: [[110,390,730,205],[110,80,195,335],[280,80,560,170]], bumpers: [[405,488,35],[565,488,35],[690,165,32]] }
 ]
 
-const initialState: UiState = { hole: 0, strokes: 0, totalStrokes: 0, phase: "placing", message: "Tap inside the striped tee area to place your ball." }
+const initialState: UiState = {
+  hole: 0,
+  strokes: 0,
+  totalStrokes: 0,
+  phase: "placing",
+  message: "Tap inside the striped tee area to place your ball.",
+  instructionsVisible: true
+}
 const gameState = Atom.make<UiState>(initialState)
 const registry = AtomRegistry.make()
 
@@ -84,7 +94,8 @@ let activePointer: number | null = null
 let lastFrame = performance.now()
 let lastUiStroke = -1
 let holeAdvanceTimer: number | undefined
-let soundEnabled = true
+let inactivityHelpTimer: number | undefined
+let soundEnabled = DEFAULT_SOUND_ENABLED
 let audioContext: AudioContext | undefined
 const courseBitmaps: Array<CanvasImageSource | undefined> = new Array(courses.length)
 const touchPointers = new Map<number, Point>()
@@ -104,7 +115,7 @@ registry.subscribe(gameState, state => {
   strokeValue.textContent = String(state.strokes)
   instruction.textContent = state.message
   stepNumber.textContent = state.phase === "placing" ? "1" : state.phase === "finished" ? "✓" : "2"
-  tutorial.classList.toggle("done", state.phase === "rolling" || state.phase === "sunk")
+  tutorial.classList.toggle("done", !state.instructionsVisible || state.phase === "rolling" || state.phase === "sunk" || state.phase === "finished")
   if (state.phase === "sunk" || state.phase === "finished") {
     toast.textContent = state.phase === "finished" ? `Round complete · ${state.totalStrokes} strokes` : state.strokes <= course.par ? "Nice putt!" : "In the cup!"
     toast.classList.add("visible")
@@ -361,18 +372,51 @@ function drawAim(pointer: Point): void {
   context.restore()
 }
 
-function playTone(frequency: number, duration = .08): void {
+function playTone(frequency: number, duration = .08, type: OscillatorType = "sine", volume = .07, delay = 0): void {
   if (!soundEnabled) return
   audioContext ??= new AudioContext()
+  if (audioContext.state === "suspended") void audioContext.resume()
+  const startAt = audioContext.currentTime + delay
   const oscillator = audioContext.createOscillator()
   const gain = audioContext.createGain()
-  oscillator.type = "sine"
+  oscillator.type = type
   oscillator.frequency.value = frequency
-  gain.gain.setValueAtTime(.07, audioContext.currentTime)
-  gain.gain.exponentialRampToValueAtTime(.001, audioContext.currentTime + duration)
+  gain.gain.setValueAtTime(.001, startAt)
+  gain.gain.linearRampToValueAtTime(volume, startAt + .004)
+  gain.gain.exponentialRampToValueAtTime(.001, startAt + duration)
   oscillator.connect(gain).connect(audioContext.destination)
-  oscillator.start()
-  oscillator.stop(audioContext.currentTime + duration)
+  oscillator.start(startAt)
+  oscillator.stop(startAt + duration)
+}
+
+function playPlacementSound(): void {
+  playTone(420, .065, "sine", .055)
+  playTone(680, .05, "sine", .025, .022)
+}
+
+function playPuttSound(): void {
+  playTone(145, .085, "triangle", .09)
+  playTone(82, .065, "sine", .045, .01)
+}
+
+function showInstructionsAfterInactivity(): void {
+  const state = registry.get(gameState)
+  if (state.phase === "placing" || state.phase === "ready" || state.phase === "aiming") {
+    updateState({ instructionsVisible: true })
+    return
+  }
+  inactivityHelpTimer = window.setTimeout(showInstructionsAfterInactivity, 5_000)
+}
+
+function scheduleInactivityHelp(): void {
+  window.clearTimeout(inactivityHelpTimer)
+  inactivityHelpTimer = window.setTimeout(showInstructionsAfterInactivity, INACTIVITY_HELP_DELAY)
+}
+
+function recordActivity(): void {
+  const state = registry.get(gameState)
+  if (state.hole > 0 && state.instructionsVisible) updateState({ instructionsVisible: false })
+  scheduleInactivityHelp()
 }
 
 function startHole(hole: number, totalStrokes: number): void {
@@ -381,7 +425,15 @@ function startHole(hole: number, totalStrokes: number): void {
   aimPoint = null
   resetViewport()
   lastUiStroke = -1
-  updateState({ hole, strokes: 0, totalStrokes, phase: "placing", message: "Tap inside the striped tee area to place your ball." })
+  updateState({
+    hole,
+    strokes: 0,
+    totalStrokes,
+    phase: "placing",
+    message: "Tap inside the striped tee area to place your ball.",
+    instructionsVisible: hole === 0
+  })
+  scheduleInactivityHelp()
 }
 
 function cancelAimForGesture(): void {
@@ -428,12 +480,13 @@ function movePinchGesture(): void {
 
 function placeBall(point: Point): void {
   if (wasm.place(point.x, point.y)) {
-    playTone(520, .06)
+    playPlacementSound()
     updateState({ phase: "ready", message: "Press the ball, drag back, then release to putt." })
   }
 }
 
 canvas.addEventListener("pointerdown", event => {
+  recordActivity()
   const isTouch = event.pointerType === "touch"
   if (isTouch) {
     event.preventDefault()
@@ -499,7 +552,7 @@ function finishAim(event: PointerEvent, cancelled = false): void {
     return
   }
   if (wasm.shoot(pullX, pullY)) {
-    playTone(190, .1)
+    playPuttSound()
     updateState({ strokes: wasm.getStrokes(), phase: "rolling", message: "Let it roll…" })
   } else {
     updateState({ phase: "ready", message: "Press the ball and pull back a little farther." })
@@ -530,11 +583,13 @@ canvas.addEventListener("pointerup", event => endPointer(event, false))
 canvas.addEventListener("pointercancel", event => endPointer(event, true))
 
 resetButton.addEventListener("click", () => {
+  recordActivity()
   const state = registry.get(gameState)
   startHole(state.hole, state.totalStrokes)
 })
 
 soundButton.addEventListener("click", () => {
+  recordActivity()
   soundEnabled = !soundEnabled
   soundButton.textContent = soundEnabled ? "Sound on" : "Sound off"
   soundButton.setAttribute("aria-pressed", String(soundEnabled))
@@ -617,6 +672,7 @@ async function boot(): Promise<void> {
   loading.classList.add("hidden")
   resizeCanvas()
   resetViewport()
+  scheduleInactivityHelp()
   void document.fonts.ready.then(invalidateCourseBitmaps)
   requestAnimationFrame(frame)
 }

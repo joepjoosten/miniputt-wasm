@@ -13,6 +13,8 @@ Open the local URL shown by Vite. Place the ball in the striped tee area, press 
 
 While a shot is rolling, the camera follows only after the ball crosses the outer 25% of the viewport. It stops following with the ball so the player can position the camera for the next shot.
 
+Sound starts enabled, with distinct synthesized cues for placing the ball and striking a putt. Guidance stays visible on the first hole, remains out of the way on later holes, and returns after 60 seconds without player input.
+
 ## Verify and build
 
 ```sh
